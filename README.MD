@@ -1,6 +1,8 @@
 # 🖼️ Mosaic DIY
 
-A high-performance Python application that transforms any image into a stunning mosaic composed of hundreds of tiny tile images. The app uses **multiprocessing** for high-speed generation and features a modern, stable Tkinter GUI.
+A high-performance Python application that transforms any image into a stunning mosaic composed of hundreds of tiny tile images. The app uses **multiprocessing** for high-speed generation and features a modern, stable Tkinter GUI. <P>
+
+Click here to download the [Mosaic DIY.exe](https://github.com/lwkchris/Mosaic-DIY/tree/main/dist) directly
 
 ---
 
