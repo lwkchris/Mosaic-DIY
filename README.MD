@@ -15,6 +15,8 @@ Click here to download the [Mosaic DIY.exe](https://github.com/lwkchris/Mosaic-D
 5.  **Generate**: Click **"✨ Generate"**. The real-time progress bar will show you the status of each CPU process.
 6.  **Save**: Once the preview appears, click **"💾 Save"** to export your final high-resolution masterpiece.
 
+![pic1](https://imgur.com/rJK7mwq)
+![pic2](https://imgur.com/WdSdwl8)
 ---
 
 ## 🧠 How it Works
