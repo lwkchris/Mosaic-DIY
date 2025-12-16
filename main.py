@@ -112,7 +112,7 @@ def generate_mosaic_core(infile, img_dir, ratio, num_processes, shared_counter):
 class MosaicGeneratorApp:
     def __init__(self, master):
         self.master = master
-        master.title("🖼️ Photo Mosaic Generator")
+        master.title("Mosaic DIY")
 
         self.output_array = None
         self.generation_running = False
