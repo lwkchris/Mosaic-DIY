@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# PyInstaller folders
+build/
+dist/
+*.spec
+
+# IDEs
+.vscode/
+.idea/
+
+# Operating System files
+Thumbs.db
+.DS_Store
+
+# Image processing temporary files
+*.jpg
+*.png
+*.jpeg
+!assets/  # Don't ignore images inside an assets folder if you have one

@@ -1,44 +1,57 @@
 # 🖼️ Mosaic DIY
 
-A high-performance Python application that transforms any image into a stunning mosaic composed of hundreds of tiny tile images. The app uses **multiprocessing** for high-speed generation and features a modern, stable Tkinter GUI. <P>
+A high-performance Python application that transforms any image into a stunning mosaic composed of hundreds of tiny tile images. The app leverages **multiprocessing** to utilize every available CPU core for high-speed generation and features a modular, stable architecture.
 
-Click here to download the [Mosaic DIY.exe](https://github.com/lwkchris/Mosaic-DIY/tree/main/dist) directly
+[**Download Mosaic DIY.exe**](https://github.com/lwkchris/Mosaic-DIY/tree/main/dist)
 
 ---
 
 ## 🚀 How to Use
 
-1.  **Prepare your Tiles**: Create a folder containing many small images (JPG, JPEG, or PNG). A larger variety of colors in your tile collection will result in a more accurate mosaic.
-2.  **Select Tiles Directory**: Click **"📁 Select Tiles Dir"** and choose your folder of small images.
-3.  **Select Target Image**: Click **"🖼️ Select Target"** and pick the main photo you want to recreate.
-4.  **Adjust Settings**: Set your Resolution and Overlay visibility (see [Settings](#-settings) below).
-5.  **Generate**: Click **"✨ Generate"**. The real-time progress bar will show you the status of each CPU process.
-6.  **Save**: Once the preview appears, click **"💾 Save"** to export your final high-resolution masterpiece.
-
-<img src="https://imgur.com/1uQRU4Z.jpg" width="60%">
-<img src="https://imgur.com/WdSdwl8.jpg" width="60%">
+1.  **Prepare your Tiles**: Create a folder containing many small images (JPG, PNG). A larger variety of colors results in higher accuracy.
+2.  **Select Tiles Directory**: Click **"📁 Select Tiles Dir"** to load your tile library.
+3.  **Select Target Image**: Click **"🖼️ Select Target"** to pick the photo you want to recreate.
+4.  **Adjust Settings**: Set your **Resolution Ratio** (density) and **Overlay Transparency**.
+5.  **Generate**: Click **"✨ Generate"**. The real-time progress bar tracks the status of all CPU worker processes.
+6.  **Save**: Click **"💾 Save"** to export your final high-resolution masterpiece.
 
 ---
 
 ## 🧠 How it Works
 
-The generator follows a sophisticated image processing pipeline:
-1. **Grid Analysis**: The target image is divided into a grid based on the selected resolution.
-2. **Color Matching**: For every cell in the grid, the app calculates the **Euclidean Distance** between the target segment and every available tile image.
-3. **Multiprocessing**: The task is split across all available CPU cores, allowing thousands of comparisons to happen simultaneously.
-4. **Weighted Blending**: The final tile assembly is blended with the original photo using `cv2.addWeighted` for the final aesthetic touch.
+The generator utilizes a sophisticated image processing pipeline designed for speed and memory efficiency:
+
+
+
+1. **Grid Analysis**: The target image is divided into a grid. Each cell is analyzed for its average color profile.
+2. **Parallel Color Matching**: Using the `multiprocessing` module, the workload is distributed across your CPU cores. Each core calculates the **Euclidean Distance** between the target segment and every available tile image.
+3. **Shared Memory**: To avoid memory bottlenecks, tiles are stored in a `RawArray` shared across processes, ensuring lightning-fast access without duplicating data in RAM.
+4. **Weighted Blending**: The assembly is blended with the original photo using `cv2.addWeighted` to ensure facial details and sharp edges are preserved.
 
 ---
-
 
 ## ⚙️ Settings Explained
 
 | Setting | Meaning | Recommendation |
 | :--- | :--- | :--- |
-| **Resolution Ratio** | Controls the final scale and tile density. A higher ratio means more tiles and a much larger final image file. | **5–10** for general use; **15+** for large-scale prints. |
-| **Original Image Overlay** | Blends the original "target" photo over the tiles. This acts as a filter to help define details that tiles alone might miss. | **0.15 - 0.30 (15-30%)** provides a professional look without hiding the tiles. |
+| **Resolution Ratio** | Multiplies the output size and tile density. | **5–10** for general use; **15+** for large prints. |
+| **Overlay Transparency** | Blends the original photo over the tiles to reclaim lost detail. | **0.15 - 0.30** for a professional, "authentic" look. |
 
 ---
+
+## 🛠️ Technical Structure
+
+The project is refactored into a modular architecture for better maintainability and performance:
+
+* **`logic.py`**: The engine. Handles OpenCV processing, Euclidean distance math, and multiprocessing pools.
+* **`gui_components.py`**: The UI library. Contains styling constants (`BG_COLOR`, `ACCENT_BLUE`), custom widgets, and theme configurations.
+* **`app.py`**: The controller. Manages the main window, thread synchronization, and user events.
+
+### Installation
+1. Clone the repository.
+2. Install dependencies:
+   ```bash
+   pip install opencv-python numpy pillow scipy
 
 ## ⏳ Performance & Processing Time
 The time required to generate your mosaic is primarily determined by the computational "heavy lifting" involved in color matching. Below are the key factors that affect speed:
@@ -61,16 +74,3 @@ The time required to generate your mosaic is primarily determined by the computa
 * Target Image Size: Larger source files (like 4K photos) require more memory (RAM) during the initial grid analysis.
 
 * Tile File Size: Using high-resolution, uncompressed files (like large PNGs or TIFFs) as your "material" tiles will slow down the initial loading phase. For maximum efficiency, use small, compressed JPGs for your tile collection.
-
----
-
-## 🛠️ Technical Setup
-
-### Prerequisites
-* Python 3.8 or higher
-* **Libraries**: OpenCV, NumPy, Pillow, SciPy, Tqdm
-
-### Installation
-Install the required dependencies via pip:
-```bash
-pip install opencv-python numpy pillow scipy tqdm

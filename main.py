@@ -1,277 +1,261 @@
-import tkinter as tk
+
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 import threading
-import os
-import re
-import numpy as np
-import cv2
-import multiprocessing as mp
-from multiprocessing.sharedctypes import RawArray
-from scipy.spatial.distance import euclidean
-from tqdm import tqdm
-import ctypes
+from core_logic import *
+from gui_components import *
 
-# --- Constants for GUI ---
-PREVIEW_SIZE_INPUT = 250
-PREVIEW_SIZE_OUTPUT = 400
-
-
-# --- Core Mosaic Generation Functions ---
-
-def resize(im, tile_row, tile_col):
-    shape_row, shape_col = im.shape[0], im.shape[1]
-    shrink_ratio = min(shape_row / tile_row, shape_col / tile_col)
-    resized = cv2.resize(im, (int(shape_col / shrink_ratio) + 1, int(shape_row / shrink_ratio) + 1),
-                         interpolation=cv2.INTER_CUBIC)
-    return resized[:tile_row, :tile_col, :]
-
-
-def img_distance(im1, im2):
-    return euclidean(im1.flatten(), im2.flatten())
-
-
-def load_all_images(img_dir, tile_row, tile_col):
-    filenames = os.listdir(img_dir)
-    result = []
-    for filename in tqdm(filenames):
-        if not re.search(r"\.(jpg|jpeg|png)$", filename, re.I):
-            continue
-        filepath = os.path.join(img_dir, filename)
-        try:
-            im = cv2.imread(filepath)
-            if im is None: continue
-            result.append(np.array(resize(im, tile_row, tile_col)))
-        except:
-            continue
-    return np.array(result, dtype=np.uint8)
-
-
-def find_closest_image(q, shared_tile_images, tile_images_shape, shared_result, img_shape, tile_row, tile_col,
-                       shared_counter):
-    tile_images = np.frombuffer(shared_tile_images, dtype=np.uint8).reshape(tile_images_shape)
-    while True:
-        try:
-            task = q.get(timeout=0.1)
-            row, col, im_roi = task
-            min_dist = float("inf")
-            min_img = None
-            for im in tile_images:
-                dist = img_distance(im_roi, im)
-                if dist < min_dist:
-                    min_dist, min_img = dist, im
-            im_res = np.frombuffer(shared_result, dtype=np.uint8).reshape(img_shape)
-            if min_img is not None:
-                im_res[row:row + tile_row, col:col + tile_col, :] = min_img
-            q.task_done()
-            with shared_counter.get_lock():
-                shared_counter.value += 1
-        except:
-            break
-
-
-def get_tile_row_col(shape):
-    return [120, 90] if shape[0] >= shape[1] else [90, 120]
-
-
-def generate_mosaic_core(infile, img_dir, ratio, num_processes, shared_counter):
-    img = cv2.imread(infile)
-    if img is None: raise FileNotFoundError(f"Could not read input file: {infile}")
-    tile_row, tile_col = get_tile_row_col(img.shape)
-    img_shape = [int(img.shape[0] / tile_row) * tile_row * ratio, int(img.shape[1] / tile_col) * tile_col * ratio, 3]
-    img_resized = cv2.resize(img, (img_shape[1], img_shape[0]), interpolation=cv2.INTER_CUBIC)
-
-    tile_images = load_all_images(img_dir, tile_row, tile_col)
-    shared_tile_images = RawArray(ctypes.c_ubyte, len(tile_images.flatten()))
-    np.copyto(np.frombuffer(shared_tile_images, dtype=np.uint8).reshape(tile_images.shape), tile_images)
-
-    im_res = np.zeros(img_shape, np.uint8)
-    shared_result = RawArray(ctypes.c_ubyte, len(im_res.flatten()))
-
-    q = mp.JoinableQueue()
-    processes = [mp.Process(target=find_closest_image, args=(
-    q, shared_tile_images, tile_images.shape, shared_result, img_shape, tile_row, tile_col, shared_counter),
-                            daemon=True) for _ in range(num_processes)]
-    for p in processes: p.start()
-
-    total_tiles = 0
-    for row in range(0, img_shape[0], tile_row):
-        for col in range(0, img_shape[1], tile_col):
-            q.put([row, col, img_resized[row:row + tile_row, col:col + tile_col, :]])
-            total_tiles += 1
-    yield total_tiles
-    q.join()
-    for p in processes: p.terminate()
-
-    # Final yield is the raw tile mosaic
-    yield np.frombuffer(shared_result, dtype=np.uint8).reshape(img_shape).copy()
-
-
-# --- GUI Application Class ---
 
 class MosaicGeneratorApp:
     def __init__(self, master):
         self.master = master
-        master.title("Mosaic DIY")
+        master.title("Mosaic Generator Pro")
+        master.configure(bg=BG_COLOR)
 
-        self.output_array = None
+        screen_w = master.winfo_screenwidth()
+        screen_h = master.winfo_screenheight()
+        self.window_w = int(screen_w * 0.55)
+        self.window_h = int(screen_h * 0.88)
+        master.geometry(f"{self.window_w}x{self.window_h}")
+        master.resizable(False, False)
+
+        top_h = int(self.window_h * 0.42)
+        bottom_h = int(self.window_h * 0.50)
+        settings_w = int(self.window_w * 0.45)
+
+        self.base_mosaic = None
+        self.original_resized = None
+        self.display_array = None
         self.generation_running = False
         self.total_tasks = 0
         self.shared_counter = mp.Value('i', 0)
         self.img_dir, self.input_file = tk.StringVar(), tk.StringVar()
-        self.ratio = tk.IntVar(value=10)
-        self.overlay_alpha = tk.DoubleVar(value=0.2)  # 20% default visibility
+        self.ratio = tk.IntVar(value=3)
+        self.overlay_alpha = tk.DoubleVar(value=0.5)
 
-        main_frame = tk.Frame(master)
-        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
-        main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_columnconfigure(1, weight=1)
+        self.overlay_alpha.trace_add("write", lambda *args: self.apply_overlay_filter())
 
-        # --- Settings ---
-        input_settings_frame = tk.LabelFrame(main_frame, text="Settings", padx=10, pady=10)
-        input_settings_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        top_frame = tk.Frame(master, bg=BG_COLOR)
+        top_frame.pack(fill='x', padx=10, pady=10)
 
-        tk.Button(input_settings_frame, text="📁 Select Tiles Dir", command=self.browse_dir).grid(row=0, column=0,
-                                                                                                 sticky="ew", pady=2)
-        tk.Entry(input_settings_frame, textvariable=self.img_dir, state='readonly').grid(row=0, column=1, sticky="ew",
-                                                                                         padx=5)
+        self.settings_frame = tk.LabelFrame(top_frame, text=" Settings ", bg=BG_COLOR, relief='groove', borderwidth=2,
+                                            width=settings_w, height=top_h)
+        self.settings_frame.pack_propagate(False)
+        self.settings_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
 
-        tk.Button(input_settings_frame, text="🖼️ Select Target", command=self.browse_file).grid(row=1, column=0,
-                                                                                                sticky="ew", pady=2)
-        tk.Entry(input_settings_frame, textvariable=self.input_file, state='readonly').grid(row=1, column=1,
-                                                                                            sticky="ew", padx=5)
-        self.input_file.trace_add('write', self.show_input_preview)
+        def create_input(parent, label, var, cmd):
+            row = tk.Frame(parent, bg=BG_COLOR)
+            row.pack(fill='x', pady=5, padx=10)
+            tk.Button(row, text=f"{label}", fg="white", bg=ACCENT_GREEN, command=cmd, width=15).pack(side='left')
+            tk.Entry(row, textvariable=var, bg="white").pack(side='left', fill='x', expand=True, padx=(5, 0))
 
-        tk.Scale(input_settings_frame, from_=1, to=20, orient=tk.HORIZONTAL, variable=self.ratio,
-                 label="Resolution Ratio").grid(row=2, column=0, columnspan=2, sticky="ew")
+        create_input(self.settings_frame, "Select Tiles Dir", self.img_dir, self.browse_dir)
+        create_input(self.settings_frame, "Select Target", self.input_file, self.browse_file)
 
-        # New Visibility Control
-        tk.Scale(input_settings_frame, from_=0.0, to=1.0, resolution=0.05, orient=tk.HORIZONTAL,
-                 variable=self.overlay_alpha, label="Original Image Overlay (Visibility)").grid(row=3, column=0,
-                                                                                                columnspan=2,
-                                                                                                sticky="ew")
+        tk.Scale(
+            self.settings_frame,
+            from_=1, to=20,
+            resolution=1,
+            orient='horizontal',
+            variable=self.ratio,
+            bg=BG_COLOR,
+            highlightthickness=0,
+            label="Resolution Ratio",
+            showvalue=True,  # This puts the number on the handle
+        ).pack(fill='x', padx=20)
 
-        self.generate_button = tk.Button(input_settings_frame, text="✨ Generate", command=self.start_generation_thread,
-                                         bg="#4CAF50", fg="white", font=('bold'))
-        self.generate_button.grid(row=4, column=0, columnspan=2, sticky="ew", pady=10)
+        tk.Scale(
+            self.settings_frame,
+            from_=0, to=1,
+            resolution=0.01,
+            orient='horizontal',
+            variable=self.overlay_alpha,
+            bg=BG_COLOR,
+            highlightthickness=0,
+            label="Overlay Transparency",  # This puts text above the slider
+            showvalue=True,  # This puts the number on the handle
+            font=('Segoe UI', 9)
+        ).pack(fill='x', padx=20, pady=(5, 10))
 
-        self.progress_bar = ttk.Progressbar(input_settings_frame, orient='horizontal', mode='determinate')
-        self.progress_bar.grid(row=5, column=0, columnspan=2, sticky="ew")
-        self.status_text = tk.StringVar(value="Ready.")
-        tk.Label(input_settings_frame, textvariable=self.status_text, wraplength=250).grid(row=6, column=0,
-                                                                                           columnspan=2, sticky="w")
+        self.gen_btn = tk.Button(self.settings_frame, text="✨ Generate", bg=ACCENT_GREEN, fg="white",
+                                 font=('Segoe UI', 10, 'bold'), relief='raised', command=self.start_generation_thread)
+        self.gen_btn.pack(fill='x', padx=15, pady=10)
 
-        # --- Input Preview (LOCKED SIZE) ---
-        self.input_preview_frame = tk.LabelFrame(main_frame, text="Input Preview", width=PREVIEW_SIZE_INPUT + 20,
-                                                 height=PREVIEW_SIZE_INPUT + 20)
-        self.input_preview_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        self.input_preview_frame.grid_propagate(False)
-        self.input_label = tk.Label(self.input_preview_frame, text="No Image")
-        self.input_label.place(relx=0.5, rely=0.5, anchor='center')
+        self.prog = ttk.Progressbar(self.settings_frame, orient='horizontal', mode='determinate')
+        self.prog.pack(fill='x', padx=15)
+        self.status_lbl = tk.Label(self.settings_frame, text="Ready", bg=BG_COLOR, anchor='w')
+        self.status_lbl.pack(fill='x', padx=15, pady=2)
 
-        # --- Output Preview (LOCKED SIZE) ---
-        self.output_preview_frame = tk.LabelFrame(main_frame, text="Mosaic Preview", width=PREVIEW_SIZE_OUTPUT + 20,
-                                                  height=PREVIEW_SIZE_OUTPUT + 60)
-        self.output_preview_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
-        self.output_preview_frame.grid_propagate(False)
-        self.output_label = tk.Label(self.output_preview_frame, text="Result will appear here.")
-        self.output_label.place(relx=0.5, rely=0.45, anchor='center')
+        self.input_preview_frame = tk.LabelFrame(top_frame, text=" Input Preview ", bg=BG_COLOR, relief='groove',
+                                                 borderwidth=2, width=self.window_w - settings_w - 30, height=top_h)
+        self.input_preview_frame.pack(side='left', fill='both', padx=(5, 0))
+        self.input_preview_frame.pack_propagate(False)
+        self.input_lbl = tk.Label(self.input_preview_frame, bg=BG_COLOR)
+        self.input_lbl.pack(expand=True, fill='both', padx=5, pady=5)
 
-        ctrl_frame = tk.Frame(self.output_preview_frame)
-        ctrl_frame.place(relx=0.5, rely=0.9, anchor='center', relwidth=0.9)
-        self.save_button = tk.Button(ctrl_frame, text="💾 Save", command=self.save_output_mosaic, state=tk.DISABLED,
-                                     bg="#007bff", fg="white")
-        self.save_button.pack(side="left", expand=True, fill="x", padx=2)
-        self.discard_button = tk.Button(ctrl_frame, text="❌ Clear", command=self.clear_output_preview,
-                                        state=tk.DISABLED)
-        self.discard_button.pack(side="right", expand=True, fill="x", padx=2)
+        bottom_frame = tk.Frame(master, bg=BG_COLOR)
+        bottom_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+
+        # Inside __init__, find the Mosaic Preview section:
+        self.mosaic_frame = tk.LabelFrame(bottom_frame, text=" Mosaic Preview ", bg=BG_COLOR, relief='groove',
+                                          borderwidth=2, height=bottom_h)
+        self.mosaic_frame.pack_propagate(False)
+        self.mosaic_frame.pack(fill='both', expand=True)
+
+        self.output_lbl = tk.Label(self.mosaic_frame, bg=BG_COLOR)
+        self.output_lbl.pack(expand=True, fill='both', padx=5)
+
+        # Pack buttons FIRST (at the bottom)
+        btn_row = tk.Frame(self.mosaic_frame, bg=BG_COLOR)
+        btn_row.pack(fill='x', side='bottom', pady=5)  # Added small pady
+
+        self.save_btn = tk.Button(btn_row, text="💾 Save", bg=ACCENT_BLUE, fg="white", font=('Segoe UI', 9, 'bold'),
+                                  command=self.save_output_mosaic, state='disabled', height=2)
+        self.save_btn.pack(side='left', expand=True, fill='x', padx=5, pady=5)
+
+        self.clear_btn = tk.Button(btn_row, text="❌ Clear", bg="#FF3333", font=('Segoe UI', 9), command=self.clear_all,
+                                   height=2)
+        self.clear_btn.pack(side='left', expand=True, fill='x', padx=5, pady=5)
+
+        master.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def apply_overlay_filter(self):
+        # 1. Get the value from the slider
+        val = self.overlay_alpha.get()
+
+        # 2. Check if the mosaic has actually been generated yet
+        if self.base_mosaic is not None:
+            # We combine the layers for the preview
+            self.display_array = cv2.addWeighted(
+                self.base_mosaic, 1.0,
+                self.original_resized, val,
+                0
+            )
+            # Update the preview label
+            self.render_preview(self.display_array, self.output_lbl)
+
+    def render_preview(self, cv_img, label_widget):
+        # 1. Force a geometry update to get accurate container dimensions
+        self.master.update_idletasks()
+
+        # 2. Identify the container (the LabelFrame)
+        parent = label_widget.master  # This is self.mosaic_frame
+
+        # 3. Calculate strict maximums
+        # We subtract ~80-100 pixels to account for:
+        # - The 'Mosaic Preview' text header
+        # - The Save/Clear button row at the bottom
+        # - Internal padding
+        max_w = parent.winfo_width() - 30
+        max_h = parent.winfo_height() - 90
+
+        # Fallback for initialization
+        if max_w < 50: max_w, max_h = 400, 300
+
+        # 4. Prepare the image
+        img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img_rgb)
+
+        # 5. Fit to the 'Safe Zone'
+        img_w, img_h = img_pil.size
+        scale = min(max_w / img_w, max_h / img_h)
+        new_size = (int(img_w * scale), int(img_h * scale))
+
+        # 6. Final rendering
+        img_pil = img_pil.resize(new_size, Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(img_pil)
+
+        # We use anchor='center' to keep it tidy if the image is small
+        label_widget.config(image=photo, anchor='center')
+        label_widget.image = photo
 
     def browse_dir(self):
         d = filedialog.askdirectory()
         if d: self.img_dir.set(d)
 
     def browse_file(self):
-        f = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png")])
-        if f: self.input_file.set(f)
+        f = filedialog.askopenfilename()
+        if f:
+            img = safe_imread(f)  # FIXED
+            if img is not None:
+                self.input_file.set(f)
+                self.render_preview(img, self.input_lbl)
+            else:
+                messagebox.showerror("Error", "Selected file is not a valid image.")
 
-    def show_input_preview(self, *args):
-        fp = self.input_file.get()
-        if not fp: return
-        try:
-            img = Image.open(fp)
-            img.thumbnail((PREVIEW_SIZE_INPUT, PREVIEW_SIZE_INPUT))
-            self.input_photo = ImageTk.PhotoImage(img)
-            self.input_label.config(image=self.input_photo, text="")
-        except:
-            pass
+    def clear_all(self):
+        self.output_lbl.config(image='')
+        self.save_btn.config(state='disabled')
+        self.base_mosaic = None
+        self.status_lbl.config(text="Ready")
 
     def start_generation_thread(self):
-        if not self.img_dir.get() or not self.input_file.get():
-            return messagebox.showerror("Error", "Select both folder and image.")
-        self.shared_counter.value, self.total_tasks, self.generation_running = 0, 0, True
-        self.progress_bar['value'] = 0
-        self.generate_button.config(state=tk.DISABLED)
-        threading.Thread(target=self.run_generation,
-                         args=(self.input_file.get(), self.img_dir.get(), self.ratio.get())).start()
-        self.update_progress()
+        if not self.img_dir.get() or not self.input_file.get(): return
+        self.shared_counter.value = 0
+        self.generation_running = True
+        self.gen_btn.config(state='disabled')
+        threading.Thread(target=self.run_generation, daemon=True).start()
+        self.update_progress_loop()
 
-    def update_progress(self):
+    def update_progress_loop(self):
         if not self.generation_running: return
         if self.total_tasks > 0:
             val = self.shared_counter.value
-            self.progress_bar['value'] = (val / self.total_tasks) * 100
-            self.status_text.set(f"Processing: {val}/{self.total_tasks}")
-        self.master.after(200, self.update_progress)
+            self.prog['value'] = (val / self.total_tasks) * 100
+            self.status_lbl.config(text=f"Processing... {val}/{self.total_tasks}")
+        self.master.after(100, self.update_progress_loop)
 
-    def run_generation(self, infile, img_dir, ratio):
+    def run_generation(self):
         try:
-            gen = generate_mosaic_core(infile, img_dir, ratio, mp.cpu_count(), self.shared_counter)
+            gen = generate_mosaic_core(self.input_file.get(), self.img_dir.get(), self.ratio.get(), mp.cpu_count(),
+                                       self.shared_counter)
             self.total_tasks = next(gen)
-            raw_mosaic = next(gen)
-
-            # --- BLENDING LOGIC ---
-            alpha = self.overlay_alpha.get()
-            if alpha > 0:
-                original = cv2.imread(infile)
-                # Resize original to match mosaic resolution exactly
-                original_resized = cv2.resize(original, (raw_mosaic.shape[1], raw_mosaic.shape[0]))
-                # Blend: Result = Mosaic*(1-alpha) + Original*alpha
-                self.output_array = cv2.addWeighted(raw_mosaic, 1 - alpha, original_resized, alpha, 0)
-            else:
-                self.output_array = raw_mosaic
-
+            self.base_mosaic = next(gen)
+            orig = safe_imread(self.input_file.get())  # FIXED
+            self.original_resized = cv2.resize(orig, (self.base_mosaic.shape[1], self.base_mosaic.shape[0]))
             self.master.after(0, self.on_success)
         except Exception as e:
-            self.master.after(0, lambda: messagebox.showerror("Error", str(e)))
+            self.master.after(0, lambda: messagebox.showerror("Error", f"Generation failed: {e}"))
+            self.generation_running = False
+            self.master.after(0, lambda: self.gen_btn.config(state='normal'))
 
     def on_success(self):
         self.generation_running = False
-        self.status_text.set("Done!")
-        self.generate_button.config(state=tk.NORMAL)
-        self.save_button.config(state=tk.NORMAL)
-        self.discard_button.config(state=tk.NORMAL)
-        img = Image.fromarray(cv2.cvtColor(self.output_array, cv2.COLOR_BGR2RGB))
-        img.thumbnail((PREVIEW_SIZE_OUTPUT, PREVIEW_SIZE_OUTPUT))
-        self.output_photo = ImageTk.PhotoImage(img)
-        self.output_label.config(image=self.output_photo, text="")
+        self.gen_btn.config(state='normal')
+        self.save_btn.config(state='normal')
+        self.status_lbl.config(text="Done!")
+        self.apply_overlay_filter()
 
     def save_output_mosaic(self):
-        fp = filedialog.asksaveasfilename(defaultextension=".jpg")
-        if fp: cv2.imwrite(fp, self.output_array)
+        if self.display_array is None: return
 
-    def clear_output_preview(self):
-        self.output_label.config(image='', text="Result will appear here.")
-        self.save_button.config(state=tk.DISABLED)
-        self.discard_button.config(state=tk.DISABLED)
-        self.output_array = None
+        fp = filedialog.asksaveasfilename(defaultextension=".jpg",
+                                          filetypes=[("JPEG Image", "*.jpg"), ("PNG Image", "*.png")])
+        if fp:
+            # The display_array is already the 'combined' version
+            # We use the safe_imwrite logic for Unicode paths
+            ext = os.path.splitext(fp)[1]
+            success, nparr = cv2.imencode(ext, self.display_array)
+            if success:
+                nparr.tofile(fp)
+                messagebox.showinfo("Success", "Mosaic saved successfully!")
+
+    def on_closing(self):
+        self.generation_running = False
+        active_children = mp.active_children()
+        for p in active_children:
+            p.terminate()
+            p.join(timeout=0.1)
+        self.master.destroy()
+        os._exit(0)  # type: ignore
 
 
 if __name__ == "__main__":
-    import multiprocessing as mp
-
     mp.freeze_support()
-    mp.set_start_method('spawn', force=True)
-
+    try:
+        mp.set_start_method('spawn', force=True)
+    except:
+        pass
     root = tk.Tk()
     app = MosaicGeneratorApp(root)
     root.mainloop()
